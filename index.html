@@ -23,6 +23,12 @@ button:disabled{opacity:.4}
 button.off{background:#4a2b2b}
 .video-wrap{position:relative;background:#000;border-radius:16px;overflow:hidden;aspect-ratio:16/9}
 video{width:100%;height:100%;object-fit:contain;display:block}
+.video-wrap.full{position:fixed;inset:0;z-index:50;border-radius:0;aspect-ratio:auto}
+.video-wrap.full video{object-fit:contain}
+#hRemote{display:none}
+.incall #hRemote{display:block}
+.incall #hPreview{position:absolute;right:8px;bottom:8px;width:26%;height:auto;aspect-ratio:16/9;border-radius:10px;z-index:2;border:2px solid #fff6;background:#000}
+#vSelf{position:absolute;right:8px;bottom:8px;width:28%;height:auto;aspect-ratio:3/4;object-fit:cover;border-radius:10px;border:2px solid #fff6;background:#000;display:none;z-index:2}
 .tap{position:absolute;inset:0;display:none;align-items:center;justify-content:center;background:#000a;font-size:1.2rem}
 .hidden{display:none!important}
 .warn{background:#4a3a14;color:#ffd48a;border-radius:12px;padding:10px;margin:8px 0;display:none}
@@ -48,7 +54,27 @@ dl{margin:0}dt{color:var(--sub);font-size:.85rem;margin-top:8px}dd{margin:2px 0;
     </div>
     <button class="primary" id="hEnable">カメラ・マイクを有効化</button>
     <div class="warn" id="hAudioWarn">⚠ 音声の再生がブロックされています。このページを一度クリックしてください。<br>(恒久対策はChromeの起動オプション / サイト設定を参照)</div>
-    <div class="card"><div class="video-wrap"><video id="hPreview" autoplay muted playsinline></video></div></div>
+    <div class="card"><div class="video-wrap" id="hVideoWrap"><video id="hRemote" autoplay muted playsinline></video><video id="hPreview" autoplay muted playsinline></video></div></div>
+    <details class="card" id="hView">
+      <summary>🖥 通話中の映像表示</summary>
+      <select id="hViewSel" style="width:100%;font:inherit;padding:10px;border-radius:10px;background:#111;color:var(--fg);border:1px solid #444;margin-top:8px">
+        <option value="normal">通常（小さく表示）</option>
+        <option value="large">拡大（ウィンドウいっぱい）</option>
+        <option value="fs">全画面（可能な場合。不可なら拡大）</option>
+      </select>
+      <p class="small">通話が始まると切り替わり、終わると元に戻ります。拡大中に映像をクリックすると戻せます。</p>
+    </details>
+    <details class="card" id="hChime">
+      <summary>🔔 接続時の音（任意）</summary>
+      <p class="small">スマホと接続できた瞬間に鳴らす音を選べます（MP3/WAV、10MBまで）。このPCのChromeに保存されます。</p>
+      <input type="file" id="hChimeFile" accept="audio/mpeg,audio/wav,audio/x-wav,.mp3,.wav">
+      <div class="small" id="hChimeName">未設定（音なし）</div>
+      <label class="small">音量 <input type="range" id="hChimeVol" min="0" max="1" step="0.05" value="0.8" style="width:60%"></label>
+      <div>
+        <button id="hChimeTest">▶ テスト再生</button>
+        <button id="hChimeDel">削除</button>
+      </div>
+    </details>
     <p class="big" id="hWait">接続待機中...</p>
     <audio id="hAudio" autoplay playsinline></audio>
   </section>
@@ -66,9 +92,11 @@ dl{margin:0}dt{color:var(--sub);font-size:.85rem;margin-top:8px}dd{margin:2px 0;
     <div id="vCall" class="hidden">
       <div class="video-wrap">
         <video id="vVideo" autoplay playsinline></video>
+        <video id="vSelf" autoplay muted playsinline></video>
         <div class="tap" id="vTap">▶ タップして再生</div>
       </div>
       <div class="big" id="vConn">接続中…</div>
+      <button id="vCam">📷 カメラ ON</button>
       <button id="vMic">🎤 マイク ON</button>
       <button id="vSnd">🔊 音声 ON</button>
       <button class="danger" id="vEnd">📞 終了</button>
@@ -198,7 +226,58 @@ function initHome(){
   // 音声再生ブロック時のクリック救済
   document.addEventListener('click', ()=>{ $('hAudio').play().then(()=>$('hAudioWarn').style.display='none').catch(()=>{}); });
 
+  /* ---- 接続時の音（IndexedDBに保存） ---- */
+  const kv = {
+    open(){ return new Promise((res,rej)=>{ const r = indexedDB.open('nekocall',1); r.onupgradeneeded = ()=>r.result.createObjectStore('kv'); r.onsuccess = ()=>res(r.result); r.onerror = ()=>rej(r.error); }); },
+    async run(mode, fn){ const db = await this.open(); return new Promise((res,rej)=>{ const q = fn(db.transaction('kv',mode).objectStore('kv')); q.onsuccess = ()=>res(q.result); q.onerror = ()=>rej(q.error); }); },
+    get(k){ return this.run('readonly', s=>s.get(k)); },
+    set(k,v){ return this.run('readwrite', s=>s.put(v,k)); },
+    del(k){ return this.run('readwrite', s=>s.delete(k)); }
+  };
+  let chime = null; // {name, blob}
+  const vol = ()=> Math.min(1, Math.max(0, Number(LS.get('neko_chime_vol') || 0.8)));
+  function renderChime(){ $('hChimeName').textContent = chime ? ('設定中：' + chime.name) : '未設定（音なし）'; }
+  function playChime(){
+    if (!chime) return;
+    try{
+      const a = new Audio(URL.createObjectURL(chime.blob));
+      a.volume = vol();
+      a.onended = ()=>URL.revokeObjectURL(a.src);
+      a.play().catch(()=>{ $('hAudioWarn').style.display = 'block'; });
+    }catch(e){}
+  }
+  kv.get('chime').then(v=>{ chime = v || null; renderChime(); }).catch(()=>{});
+  $('hChimeVol').value = vol();
+  $('hChimeVol').oninput = e=>LS.set('neko_chime_vol', e.target.value);
+  $('hChimeFile').onchange = async e=>{
+    const f = e.target.files[0]; if (!f) return;
+    if (f.size > 10*1024*1024) { showErr('音声ファイルは10MB以下にしてください'); return; }
+    try{ await kv.set('chime', { name:f.name, blob:f }); chime = { name:f.name, blob:f }; renderChime(); showErr(''); playChime(); }
+    catch(err){ showErr('音の保存に失敗しました: ' + err.message); }
+  };
+  $('hChimeTest').onclick = playChime;
+  $('hChimeDel').onclick = async ()=>{ try{ await kv.del('chime'); }catch(e){} chime = null; $('hChimeFile').value = ''; renderChime(); };
+
+  /* ---- 通話中の映像表示 ---- */
+  const wrap = $('hVideoWrap');
+  $('hViewSel').value = LS.get('neko_view') || 'normal';
+  $('hViewSel').onchange = e=>LS.set('neko_view', e.target.value);
+  function applyView(on){
+    const mode = LS.get('neko_view') || 'normal';
+    if (on && mode !== 'normal') {
+      wrap.classList.add('full');
+      if (mode === 'fs' && !document.fullscreenElement) { try{ document.documentElement.requestFullscreen().catch(()=>{}); }catch(e){} }
+    } else {
+      wrap.classList.remove('full');
+      if (document.fullscreenElement) { try{ document.exitFullscreen(); }catch(e){} }
+    }
+  }
+  wrap.onclick = ()=>{ if (wrap.classList.contains('full')) applyView(false); };
+
   function closeActive(){
+    applyView(false);
+    wrap.classList.remove('incall');
+    $('hRemote').srcObject = null;
     if (!active) return;
     try{ active.pc.close(); }catch(e){}
     $('hAudio').srcObject = null;
@@ -210,15 +289,21 @@ function initHome(){
     const pc = new RTCPeerConnection({ iceServers: s.ice || [] });
     const me = { sid: s.id, pc, connected:false };
     active = me; render();
+    const remote = new MediaStream();
     pc.ontrack = e=>{
-      const st = e.streams[0] || new MediaStream([e.track]);
-      $('hAudio').srcObject = st;
+      remote.addTrack(e.track);
+      $('hAudio').srcObject = remote;
       $('hAudio').play().catch(()=>{ $('hAudioWarn').style.display='block'; });
+      if (e.track.kind === 'video') {
+        $('hRemote').srcObject = remote;           // 飼い主の映像（音声はhAudioで再生）
+        $('hRemote').play().catch(()=>{});
+        wrap.classList.add('incall');              // 猫プレビューは右下の小窓に
+      }
     };
     pc.onconnectionstatechange = ()=>{
       if (active !== me) return;
       const st = pc.connectionState;
-      if (st === 'connected') { me.connected = true; $('hAudioWarn').style.display = $('hAudioWarn').style.display; }
+      if (st === 'connected' && !me.connected) { me.connected = true; playChime(); applyView(true); }
       if (st === 'failed' || st === 'closed') { api('end',{sid:me.sid}).catch(()=>{}); closeActive(); }
       if (st === 'disconnected') setTimeout(()=>{ if (active===me && pc.connectionState!=='connected'){ closeActive(); } }, 8000);
       render();
@@ -305,6 +390,7 @@ function initViewer(){
     if (micStream) micStream.getTracks().forEach(t=>t.stop());
     pc = null; micStream = null;
     $('vVideo').srcObject = null;
+    $('vSelf').srcObject = null; $('vSelf').style.display = 'none';
   }
   async function endCall(notify){
     if (notify && sid) api('end',{sid}).catch(()=>{});
@@ -319,15 +405,27 @@ function initViewer(){
     $('vMic').textContent = '🎤 マイク ON'; $('vMic').classList.remove('off');
     try{
       // iOS対策: ユーザー操作の直後にマイクを取得
+      const aud = { echoCancellation:true, noiseSuppression:true, autoGainControl:true };
       try{
-        micStream = await navigator.mediaDevices.getUserMedia({ audio:{ echoCancellation:true, noiseSuppression:true, autoGainControl:true }, video:false });
-      }catch(e){ micStream = null; showErr('マイクが使えないため視聴専用です（' + e.name + '）'); }
+        micStream = await navigator.mediaDevices.getUserMedia({ audio:aud, video:{ facingMode:'user', width:{ideal:640}, height:{ideal:480}, frameRate:{ideal:24} } });
+      }catch(e1){
+        try{
+          micStream = await navigator.mediaDevices.getUserMedia({ audio:aud, video:false });
+          showErr('カメラが使えないため声のみで通話します（' + e1.name + '）');
+        }catch(e2){ micStream = null; showErr('マイクが使えないため視聴専用です（' + e2.name + '）'); }
+      }
+      const hasCam = !!(micStream && micStream.getVideoTracks().length);
+      $('vSelf').srcObject = hasCam ? micStream : null;
+      $('vSelf').style.display = hasCam ? 'block' : 'none';
+      $('vCam').disabled = !hasCam;
+      $('vCam').textContent = '📷 カメラ ON'; $('vCam').classList.remove('off');
 
       pc = new RTCPeerConnection({ iceServers: ice });
       const me = pc;
-      if (micStream) micStream.getTracks().forEach(t=>pc.addTrack(t, micStream));
+      if (micStream && micStream.getAudioTracks().length) pc.addTrack(micStream.getAudioTracks()[0], micStream);
       else pc.addTransceiver('audio', { direction:'recvonly' });
-      pc.addTransceiver('video', { direction:'recvonly' });
+      if (hasCam) pc.addTrack(micStream.getVideoTracks()[0], micStream);
+      else pc.addTransceiver('video', { direction:'recvonly' });
       const remote = new MediaStream();
       pc.ontrack = e=>{
         remote.addTrack(e.track);
@@ -365,6 +463,13 @@ function initViewer(){
     }
   };
   $('vTap').onclick = ()=>{ $('vVideo').play().then(()=>$('vTap').style.display='none').catch(()=>{}); };
+  $('vCam').onclick = ()=>{
+    const t = micStream && micStream.getVideoTracks()[0];
+    if (!t) return;
+    t.enabled = !t.enabled;
+    $('vCam').textContent = t.enabled ? '📷 カメラ ON' : '📷 カメラ OFF';
+    $('vCam').classList.toggle('off', !t.enabled);
+  };
   $('vMic').onclick = ()=>{
     if (!micStream) return;
     const t = micStream.getAudioTracks()[0]; t.enabled = !t.enabled;
@@ -384,3 +489,4 @@ if (MODE === 'home') initHome(); else initViewer();
 </script>
 </body>
 </html>
+
