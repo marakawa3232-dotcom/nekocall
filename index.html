@@ -1,0 +1,386 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="robots" content="noindex,nofollow">
+<title>NekoCall</title>
+<style>
+:root{--bg:#14161a;--card:#1f2329;--fg:#f1f3f5;--sub:#9aa3ad;--acc:#ff9f43;--ok:#3ddc84;--ng:#ff5d5d}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--fg);font-family:system-ui,-apple-system,"Hiragino Sans","Yu Gothic UI",sans-serif;
+ min-height:100vh;min-height:100dvh;display:flex;justify-content:center;padding:max(16px,env(safe-area-inset-top)) 16px 24px}
+main{width:100%;max-width:520px;text-align:center}
+h1{margin:8px 0 4px;font-size:1.6rem}
+.sub{color:var(--sub);margin:0 0 16px}
+.card{background:var(--card);border-radius:16px;padding:16px;margin:12px 0;text-align:left}
+.big{font-size:1.4rem;text-align:center;margin:8px 0}
+.small{font-size:.85rem;color:var(--sub)}
+button{font:inherit;color:var(--fg);background:#2d333b;border:0;border-radius:14px;padding:14px 18px;margin:6px 4px;min-height:52px;cursor:pointer}
+button.primary{background:var(--acc);color:#1a1200;font-weight:700;font-size:1.3rem;width:100%;min-height:76px}
+button.danger{background:var(--ng);color:#fff}
+button:disabled{opacity:.4}
+button.off{background:#4a2b2b}
+.video-wrap{position:relative;background:#000;border-radius:16px;overflow:hidden;aspect-ratio:16/9}
+video{width:100%;height:100%;object-fit:contain;display:block}
+.tap{position:absolute;inset:0;display:none;align-items:center;justify-content:center;background:#000a;font-size:1.2rem}
+.hidden{display:none!important}
+.warn{background:#4a3a14;color:#ffd48a;border-radius:12px;padding:10px;margin:8px 0;display:none}
+input{width:100%;font:inherit;padding:10px;border-radius:10px;border:1px solid #444;background:#111;color:var(--fg);margin:4px 0 10px}
+details summary{cursor:pointer;color:var(--sub)}
+dl{margin:0}dt{color:var(--sub);font-size:.85rem;margin-top:8px}dd{margin:2px 0;word-break:break-all}
+</style>
+</head>
+<body>
+<main>
+  <h1>🐈 NekoCall <span id="homeTag" class="hidden">HOME</span></h1>
+  <p class="sub" id="subtitle"></p>
+
+  <!-- ========== 自宅PC画面 ========== -->
+  <section id="homeView" class="hidden">
+    <div class="card">
+      <div class="big" id="hStatus">状態：…</div>
+      <dl>
+        <dt>カメラ：</dt><dd id="hCam">未許可</dd>
+        <dt>マイク：</dt><dd id="hMic">未許可</dd>
+        <dt>スピーカー：</dt><dd id="hSpk">未確認</dd>
+      </dl>
+    </div>
+    <button class="primary" id="hEnable">カメラ・マイクを有効化</button>
+    <div class="warn" id="hAudioWarn">⚠ 音声の再生がブロックされています。このページを一度クリックしてください。<br>(恒久対策はChromeの起動オプション / サイト設定を参照)</div>
+    <div class="card"><div class="video-wrap"><video id="hPreview" autoplay muted playsinline></video></div></div>
+    <p class="big" id="hWait">接続待機中...</p>
+    <audio id="hAudio" autoplay playsinline></audio>
+  </section>
+
+  <!-- ========== スマホ画面 ========== -->
+  <section id="viewerView" class="hidden">
+    <div id="vIdle">
+      <div class="card">
+        <div class="small">自宅PC</div>
+        <div class="big" id="vStatus">確認中…</div>
+        <div class="small" style="text-align:center" id="vLast"></div>
+      </div>
+      <button class="primary" id="vStart" disabled>🐈 猫を見る</button>
+    </div>
+    <div id="vCall" class="hidden">
+      <div class="video-wrap">
+        <video id="vVideo" autoplay playsinline></video>
+        <div class="tap" id="vTap">▶ タップして再生</div>
+      </div>
+      <div class="big" id="vConn">接続中…</div>
+      <button id="vMic">🎤 マイク ON</button>
+      <button id="vSnd">🔊 音声 ON</button>
+      <button class="danger" id="vEnd">📞 終了</button>
+    </div>
+  </section>
+
+  <div class="warn" id="errBox"></div>
+
+  <details class="card" id="settings">
+    <summary>設定（初回のみ）</summary>
+    <label class="small">GAS WebアプリURL (…/exec)</label>
+    <input id="setGas" autocomplete="off" autocapitalize="off" spellcheck="false">
+    <label class="small" id="setTokLabel">トークン</label>
+    <input id="setTok" type="password" autocomplete="off">
+    <button id="setSave">保存</button>
+  </details>
+</main>
+
+<script>
+'use strict';
+const $ = id => document.getElementById(id);
+const LS = {
+  get(k){ try{ return localStorage.getItem(k) || ''; }catch(e){ return ''; } },
+  set(k,v){ try{ localStorage.setItem(k,v); }catch(e){} }
+};
+const MODE = new URLSearchParams(location.search).get('mode') === 'home' ? 'home' : 'viewer';
+const TOK_KEY = 'neko_token_' + MODE;
+
+// 初回セットアップ用: index.html#g=<GAS URL>&t=<トークン> で開くと保存し、URLから消す
+if (location.hash.length > 1) {
+  const h = new URLSearchParams(location.hash.slice(1));
+  if (h.get('g')) LS.set('neko_gas', h.get('g'));
+  if (h.get('t')) LS.set(TOK_KEY, h.get('t'));
+  history.replaceState(null, '', location.pathname + location.search);
+}
+
+function showErr(msg){ const b=$('errBox'); b.textContent = msg||''; b.style.display = msg ? 'block':'none'; }
+
+async function api(action, extra){
+  const gas = LS.get('neko_gas'), token = LS.get(TOK_KEY);
+  if (!gas || !token) throw new Error('not_configured');
+  const ctl = new AbortController(); const to = setTimeout(()=>ctl.abort(), 15000);
+  try{
+    // Content-Type を付けない(=text/plain)ことでCORSプリフライトを避ける
+    const r = await fetch(gas, { method:'POST', body: JSON.stringify(Object.assign({role:MODE, token, action}, extra||{})), signal: ctl.signal });
+    const j = await r.json();
+    if (!j.ok) throw new Error(j.error || 'error');
+    return j;
+  } finally { clearTimeout(to); }
+}
+
+function waitIce(pc, ms){
+  return new Promise(res=>{
+    if (pc.iceGatheringState === 'complete') return res();
+    const done = ()=>{ pc.removeEventListener('icegatheringstatechange', chk); clearTimeout(t); res(); };
+    const chk = ()=>{ if (pc.iceGatheringState === 'complete') done(); };
+    const t = setTimeout(done, ms);
+    pc.addEventListener('icegatheringstatechange', chk);
+  });
+}
+const sleep = ms => new Promise(r=>setTimeout(r,ms));
+
+// 設定UI
+$('setGas').value = LS.get('neko_gas');
+$('setTokLabel').textContent = (MODE==='home' ? 'HOME_TOKEN（自宅PC用）' : 'VIEWER_TOKEN（スマホ用）');
+$('setSave').onclick = ()=>{ LS.set('neko_gas',$('setGas').value.trim()); LS.set(TOK_KEY,$('setTok').value.trim()); $('setTok').value=''; showErr(''); location.reload(); };
+if (!LS.get('neko_gas') || !LS.get(TOK_KEY)) $('settings').open = true;
+
+// バックグラウンドでも間引かれにくいWorkerタイマー
+const ticker = new Worker(URL.createObjectURL(new Blob(['setInterval(()=>postMessage(0),1000)'],{type:'text/javascript'})));
+
+/* ===================== 自宅PC ===================== */
+function initHome(){
+  $('homeView').classList.remove('hidden'); $('homeTag').classList.remove('hidden');
+  $('subtitle').textContent = '自宅PCモード';
+  document.title = 'NekoCall HOME';
+  const IDLE_MS = 5000, ACTIVE_MS = 1000;
+  let localStream = null, active = null, busy = false, lastPoll = 0, okAt = 0, wake = null;
+
+  function render(){
+    let s;
+    if (active && active.connected) s = '🟢 接続中（視聴されています）';
+    else if (active) s = '🟡 接続処理中';
+    else if (!LS.get('neko_gas') || !LS.get(TOK_KEY)) s = '⚙ 設定が必要です';
+    else if (Date.now() - okAt > 15000) s = '🔴 サーバーに接続できません';
+    else if (!localStream) s = '🟡 カメラ・マイク未許可';
+    else s = '🟢 接続可能';
+    $('hStatus').textContent = '状態：' + s;
+    $('hWait').textContent = active ? '通話中...' : '接続待機中...';
+  }
+  setInterval(render, 1000);
+
+  async function enable(){
+    showErr('');
+    try{
+      localStream = await navigator.mediaDevices.getUserMedia({
+        video:{ width:{ideal:1280}, height:{ideal:720}, frameRate:{ideal:24} },
+        audio:{ echoCancellation:true, noiseSuppression:true, autoGainControl:true }
+      });
+      $('hPreview').srcObject = localStream;
+      $('hCam').textContent = localStream.getVideoTracks()[0].label || '使用中';
+      $('hMic').textContent = localStream.getAudioTracks()[0].label || '使用中';
+      try{
+        const devs = await navigator.mediaDevices.enumerateDevices();
+        const spk = devs.find(d=>d.kind==='audiooutput' && d.deviceId==='default') || devs.find(d=>d.kind==='audiooutput');
+        $('hSpk').textContent = spk ? (spk.label || '既定のスピーカー') : '既定のスピーカー';
+      }catch(e){ $('hSpk').textContent = '既定のスピーカー'; }
+      $('hEnable').classList.add('hidden');
+      keepAwake();
+    }catch(e){
+      showErr('カメラ・マイクを取得できません: ' + e.name + ' ' + e.message);
+    }
+  }
+  async function keepAwake(){
+    try{ if ('wakeLock' in navigator) wake = await navigator.wakeLock.request('screen'); }catch(e){}
+  }
+  document.addEventListener('visibilitychange', ()=>{ if (document.visibilityState==='visible' && localStream) keepAwake(); });
+  $('hEnable').onclick = enable;
+  // 権限が保存済みなら無操作で自動有効化
+  (async()=>{
+    try{
+      const [c,m] = await Promise.all([navigator.permissions.query({name:'camera'}), navigator.permissions.query({name:'microphone'})]);
+      if (c.state==='granted' && m.state==='granted') enable();
+    }catch(e){}
+  })();
+
+  // 音声再生ブロック時のクリック救済
+  document.addEventListener('click', ()=>{ $('hAudio').play().then(()=>$('hAudioWarn').style.display='none').catch(()=>{}); });
+
+  function closeActive(){
+    if (!active) return;
+    try{ active.pc.close(); }catch(e){}
+    $('hAudio').srcObject = null;
+    active = null; render();
+  }
+
+  async function startSession(s){
+    closeActive();
+    const pc = new RTCPeerConnection({ iceServers: s.ice || [] });
+    const me = { sid: s.id, pc, connected:false };
+    active = me; render();
+    pc.ontrack = e=>{
+      const st = e.streams[0] || new MediaStream([e.track]);
+      $('hAudio').srcObject = st;
+      $('hAudio').play().catch(()=>{ $('hAudioWarn').style.display='block'; });
+    };
+    pc.onconnectionstatechange = ()=>{
+      if (active !== me) return;
+      const st = pc.connectionState;
+      if (st === 'connected') { me.connected = true; $('hAudioWarn').style.display = $('hAudioWarn').style.display; }
+      if (st === 'failed' || st === 'closed') { api('end',{sid:me.sid}).catch(()=>{}); closeActive(); }
+      if (st === 'disconnected') setTimeout(()=>{ if (active===me && pc.connectionState!=='connected'){ closeActive(); } }, 8000);
+      render();
+    };
+    try{
+      await pc.setRemoteDescription({ type:'offer', sdp:s.offer });
+      localStream.getTracks().forEach(t=>pc.addTrack(t, localStream));
+      await pc.setLocalDescription(await pc.createAnswer());
+      await waitIce(pc, 4000);
+      await api('answer', { sid:s.id, answer: pc.localDescription.sdp });
+    }catch(e){
+      showErr('接続処理エラー: ' + e.message);
+      closeActive();
+    }
+  }
+
+  async function pollOnce(){
+    busy = true; lastPoll = Date.now();
+    try{
+      const j = await api('poll');
+      okAt = Date.now(); showErr('');
+      const s = j.sess;
+      if (s) {
+        if (s.state === 'requested') {
+          if (!localStream) showErr('接続要求を受信しましたが、カメラ・マイクが未許可です。');
+          else await startSession(s);
+        } else if (s.state === 'ended' && active && active.sid === s.id) closeActive();
+      }
+    }catch(e){
+      if (e.message === 'unauthorized' || e.message === 'locked' || e.message === 'not_configured') showErr('認証/設定エラー: ' + e.message);
+    }finally{ busy = false; render(); }
+  }
+  ticker.onmessage = ()=>{
+    const iv = active ? ACTIVE_MS : IDLE_MS;
+    if (!busy && Date.now() - lastPoll >= iv - 100) pollOnce();
+  };
+  render();
+}
+
+/* ===================== スマホ ===================== */
+function initViewer(){
+  $('viewerView').classList.remove('hidden');
+  $('subtitle').textContent = '自宅PC';
+  let online = false, hbAt = 0, ice = [{urls:'stun:stun.l.google.com:19302'}];
+  let pc = null, sid = null, micStream = null, inCall = false, busy = false, lastPoll = 0;
+
+  function renderStatus(){
+    $('vStatus').textContent = hbAt ? (online ? '🟢 ONLINE' : '🔴 OFFLINE') : '確認中…';
+    if (hbAt) {
+      const sec = Math.max(0, Math.round((Date.now()-hbAt)/1000));
+      $('vLast').textContent = '最終確認：' + (sec < 5 ? '数秒前' : sec + '秒前');
+    }
+    $('vStart').disabled = !online || inCall;
+  }
+  setInterval(renderStatus, 1000);
+
+  async function refresh(){
+    busy = true; lastPoll = Date.now();
+    try{
+      const j = await api('status');
+      online = j.online; if (j.ice) ice = j.ice;
+      hbAt = j.ageSec === null ? Date.now() - 999000 : Date.now() - j.ageSec*1000;
+      showErr('');
+    }catch(e){
+      online = false;
+      showErr(e.message==='not_configured' ? '「設定」からURLとトークンを入力してください' : '状態を取得できません: ' + e.message);
+    }finally{ busy = false; renderStatus(); }
+  }
+  ticker.onmessage = ()=>{
+    if (inCall || document.visibilityState !== 'visible' || busy) return;
+    if (Date.now() - lastPoll >= 5000) refresh();
+  };
+  document.addEventListener('visibilitychange', ()=>{ if (document.visibilityState==='visible' && !inCall) refresh(); });
+  refresh();
+
+  function showCall(on){
+    inCall = on;
+    $('vIdle').classList.toggle('hidden', on);
+    $('vCall').classList.toggle('hidden', !on);
+    renderStatus();
+  }
+  function cleanup(){
+    try{ if (pc) pc.close(); }catch(e){}
+    if (micStream) micStream.getTracks().forEach(t=>t.stop());
+    pc = null; micStream = null;
+    $('vVideo').srcObject = null;
+  }
+  async function endCall(notify){
+    if (notify && sid) api('end',{sid}).catch(()=>{});
+    sid = null; cleanup(); showCall(false); refresh();
+  }
+
+  $('vStart').onclick = async ()=>{
+    showErr('');
+    $('vConn').textContent = '接続中…';
+    showCall(true);
+    const v = $('vVideo'); v.muted = false; $('vSnd').textContent = '🔊 音声 ON';
+    $('vMic').textContent = '🎤 マイク ON'; $('vMic').classList.remove('off');
+    try{
+      // iOS対策: ユーザー操作の直後にマイクを取得
+      try{
+        micStream = await navigator.mediaDevices.getUserMedia({ audio:{ echoCancellation:true, noiseSuppression:true, autoGainControl:true }, video:false });
+      }catch(e){ micStream = null; showErr('マイクが使えないため視聴専用です（' + e.name + '）'); }
+
+      pc = new RTCPeerConnection({ iceServers: ice });
+      const me = pc;
+      if (micStream) micStream.getTracks().forEach(t=>pc.addTrack(t, micStream));
+      else pc.addTransceiver('audio', { direction:'recvonly' });
+      pc.addTransceiver('video', { direction:'recvonly' });
+      const remote = new MediaStream();
+      pc.ontrack = e=>{
+        remote.addTrack(e.track);
+        v.srcObject = remote;
+        v.play().catch(()=>{ $('vTap').style.display='flex'; });
+      };
+      pc.onconnectionstatechange = ()=>{
+        if (pc !== me) return;
+        const st = pc.connectionState;
+        if (st==='connected') $('vConn').textContent = '🟢 接続中';
+        else if (st==='disconnected') $('vConn').textContent = '🟡 再接続中…';
+        else if (st==='failed') { showErr('接続に失敗しました。ネットワーク制限の可能性があります（TURNが必要かもしれません）'); endCall(true); }
+      };
+      await pc.setLocalDescription(await pc.createOffer());
+      await waitIce(pc, 4000);
+      const c = await api('connect', { offer: pc.localDescription.sdp });
+      sid = c.sid;
+      $('vConn').textContent = '自宅PCの応答を待っています…';
+      for (let i = 0; i < 40; i++) {
+        if (pc !== me) return;
+        await sleep(1000);
+        const r = await api('result', { sid });
+        if (r.state === 'answered') {
+          await pc.setRemoteDescription({ type:'answer', sdp:r.answer });
+          $('vConn').textContent = '接続を確立中…';
+          return;
+        }
+        if (r.state === 'ended' || r.state === 'none') throw new Error('セッションが終了しました');
+      }
+      throw new Error('自宅PCから応答がありません');
+    }catch(e){
+      if (e.message === 'offline') showErr('自宅PCがOFFLINEです');
+      else showErr('接続エラー: ' + e.message);
+      endCall(true);
+    }
+  };
+  $('vTap').onclick = ()=>{ $('vVideo').play().then(()=>$('vTap').style.display='none').catch(()=>{}); };
+  $('vMic').onclick = ()=>{
+    if (!micStream) return;
+    const t = micStream.getAudioTracks()[0]; t.enabled = !t.enabled;
+    $('vMic').textContent = t.enabled ? '🎤 マイク ON' : '🎤 マイク OFF';
+    $('vMic').classList.toggle('off', !t.enabled);
+  };
+  $('vSnd').onclick = ()=>{
+    const v = $('vVideo'); v.muted = !v.muted;
+    $('vSnd').textContent = v.muted ? '🔊 音声 OFF' : '🔊 音声 ON';
+    $('vSnd').classList.toggle('off', v.muted);
+  };
+  $('vEnd').onclick = ()=>endCall(true);
+  window.addEventListener('pagehide', ()=>{ if (sid) api('end',{sid}).catch(()=>{}); });
+}
+
+if (MODE === 'home') initHome(); else initViewer();
+</script>
+</body>
+</html>
