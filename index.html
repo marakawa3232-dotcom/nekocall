@@ -312,7 +312,7 @@ function initHome(){
       await pc.setRemoteDescription({ type:'offer', sdp:s.offer });
       localStream.getTracks().forEach(t=>pc.addTrack(t, localStream));
       await pc.setLocalDescription(await pc.createAnswer());
-      await waitIce(pc, 4000);
+      await waitIce(pc, 6000);
       await api('answer', { sid:s.id, answer: pc.localDescription.sdp });
     }catch(e){
       showErr('接続処理エラー: ' + e.message);
@@ -440,7 +440,7 @@ function initViewer(){
         else if (st==='failed') { showErr('接続に失敗しました。ネットワーク制限の可能性があります（TURNが必要かもしれません）'); endCall(true); }
       };
       await pc.setLocalDescription(await pc.createOffer());
-      await waitIce(pc, 4000);
+      await waitIce(pc, 6000);
       const c = await api('connect', { offer: pc.localDescription.sdp });
       sid = c.sid;
       $('vConn').textContent = '自宅PCの応答を待っています…';
@@ -489,4 +489,3 @@ if (MODE === 'home') initHome(); else initViewer();
 </script>
 </body>
 </html>
-
