@@ -86,6 +86,7 @@ dl{margin:0}dt{color:var(--sub);font-size:.85rem;margin-top:8px}dd{margin:2px 0;
         <div class="small">自宅PC</div>
         <div class="big" id="vStatus">確認中…</div>
         <div class="small" style="text-align:center" id="vLast"></div>
+        <div class="small" style="text-align:center" id="vTurn"></div>
       </div>
       <button class="primary" id="vStart" disabled>🐈 猫を見る</button>
     </div>
@@ -365,6 +366,7 @@ function initViewer(){
     try{
       const j = await api('status');
       online = j.online; if (j.ice) ice = j.ice;
+      $('vTurn').textContent = '中継サーバー(TURN)：' + (ice.some(s=>s.username) ? 'あり' : 'なし（STUNのみ）');
       hbAt = j.ageSec === null ? Date.now() - 999000 : Date.now() - j.ageSec*1000;
       showErr('');
     }catch(e){
